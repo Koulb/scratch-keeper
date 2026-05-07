@@ -11,7 +11,10 @@ import subprocess
 import tarfile
 from pathlib import Path
 
-from scratch_keeper.common import Manifest, write_json, get_logger
+from scratch_keeper.common import (
+    Manifest, write_json, get_logger,
+    load_manifests, read_json, timestamp_now,
+)
 
 
 DEFAULT_BACKUP_GLOBS: tuple[str, ...] = (
@@ -163,4 +166,96 @@ def archive_files(
         "n_files": len(files),
         "sha256": digest,
         "tar_size_bytes": size,
+    }
+
+
+def _rotation_warnings(backup_dir: Path, keep_last: int) -> list[str]:
+    archives = sorted(
+        list(backup_dir.glob("scratch_backup_*.tar.zst"))
+        + list(backup_dir.glob("scratch_backup_*.tar.gz")),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if len(archives) <= keep_last:
+        return []
+    return [f"old archive (kept_last={keep_last}): {p}" for p in archives[keep_last:]]
+
+
+def run(config: dict, *, audit_path: Path,
+        include: list[str] | None = None,
+        exclude: list[str] | None = None,
+        out_dir: str | None = None,
+        verify: bool | None = None,
+        dry_run: bool = False) -> dict:
+    log = get_logger("scratch_keeper.backup")
+    payload = read_json(audit_path)
+    rows = payload["rows"]
+    keepers = [r for r in rows if r["category"] == "keeper"]
+    if include:
+        keepers = [r for r in keepers if r["name"] in include]
+    if exclude:
+        keepers = [r for r in keepers if r["name"] not in exclude]
+
+    projects_dir = Path(config["projects_dir"]).expanduser()
+    manifests = load_manifests(projects_dir) if projects_dir.exists() else {}
+
+    files_total: list[Path] = []
+    per_project: list[dict] = []
+    scratch_root = Path(config["scratch_root"])
+    for r in keepers:
+        proj_path = Path(r["path"])
+        m = manifests.get(proj_path.name) or Manifest(
+            name=proj_path.name, path=proj_path.name, category="keeper",
+        )
+        proj_files = build_file_list(proj_path, m)
+        per_project.append({
+            "name": proj_path.name,
+            "n_files": len(proj_files),
+            "src_total_bytes": r["size_bytes"],
+        })
+        files_total.extend(proj_files)
+
+    log.info("backup will archive %d files from %d keeper projects",
+             len(files_total), len(keepers))
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "n_files": len(files_total),
+            "n_projects": len(keepers),
+            "per_project": per_project,
+        }
+
+    backup_dir = Path(out_dir or config["backup_dir"]).expanduser()
+    bcfg = config.get("backup", {})
+    ts = timestamp_now()
+    target = backup_dir / f"scratch_backup_{ts}.tar.zst"
+
+    arch = archive_files(
+        files=files_total,
+        root=scratch_root,
+        out_path=target,
+        compressor=bcfg.get("compressor", "zstd"),
+        zstd_level=int(bcfg.get("zstd_level", 6)),
+        zstd_threads=int(bcfg.get("zstd_threads", 0)),
+        verify=bool(verify if verify is not None else bcfg.get("verify", True)),
+    )
+
+    side = read_json(arch["manifest_path"])
+    side["audit_ref"] = str(audit_path)
+    side["projects"] = per_project
+    write_json(arch["manifest_path"], side)
+
+    keep_last = int(bcfg.get("keep_last", 3))
+    warnings = _rotation_warnings(backup_dir, keep_last)
+    for w in warnings:
+        log.warning(w)
+
+    return {
+        "tar_path": arch["tar_path"],
+        "manifest_path": arch["manifest_path"],
+        "n_files": arch["n_files"],
+        "sha256": arch["sha256"],
+        "tar_size_bytes": arch["tar_size_bytes"],
+        "rotation_warnings": warnings,
     }
