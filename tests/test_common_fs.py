@@ -131,3 +131,33 @@ def test_parse_lfs_quota_returns_none_when_all_limits_zero():
         "              100  0  0  -  1  0  0  -\n"
     )
     assert _parse_lfs_quota(raw) is None
+
+
+def test_parse_lfs_quota_ignores_trailer_uid_lines():
+    """Real CSCS Eiger output has trailer lines; old parser scooped uid into nums."""
+    raw = (
+        "Disk quotas for usr apoliukh (uid 29758):\n"
+        "     Filesystem  kbytes   quota   limit   grace   files   quota   limit   grace\n"
+        "/capstor/scratch/cscs/apoliukh\n"
+        "                13908273596       0       0       - 1550714       0       0       -\n"
+        "uid 29758 is using default block quota setting\n"
+        "uid 29758 is using default file quota setting\n"
+    )
+    # Both hard and soft limits are 0 → "default/no explicit quota" → return None,
+    # NOT a fabricated 29758 inode limit from the trailer.
+    assert _parse_lfs_quota(raw) is None
+
+
+def test_parse_lfs_quota_with_explicit_limit_after_trailer():
+    raw = (
+        "Disk quotas for usr foo (uid 12345):\n"
+        "     Filesystem  kbytes  quota  limit  grace  files  quota  limit  grace\n"
+        "/capstor/scratch/cscs/foo\n"
+        "                500  0  1000  - 9  0  20  -\n"
+        "uid 12345 is using default block quota setting\n"
+    )
+    q = _parse_lfs_quota(raw)
+    assert q == {
+        "kbytes_used": 500, "kbytes_limit": 1000,
+        "files_used": 9, "files_limit": 20,
+    }

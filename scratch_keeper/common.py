@@ -209,19 +209,37 @@ def _parse_int_token(tok: str) -> int | None:
 def _parse_lfs_quota(stdout: str) -> dict | None:
     """Parse stdout of `lfs quota -u USER PATH`.
 
-    Returns `{kbytes_used, kbytes_limit, files_used, files_limit}` or None
-    when output is unparseable, or when both file and kbyte limits are 0
-    (Lustre's "unlimited" sentinel — no quota to report).
+    Locates the column header line (containing 'kbytes' and 'files'), then
+    collects the first 8 numeric tokens from the lines that follow,
+    stopping at trailer lines like "uid N is using default ...".
+
+    Returns `{kbytes_used, kbytes_limit, files_used, files_limit}`, or None
+    when the row is missing/unparseable, or when both file and kbyte
+    limits are 0 (Lustre's sentinel for "no explicit quota").
     """
+    lines = stdout.splitlines()
+    header_idx = None
+    for i, ln in enumerate(lines):
+        toks = ln.split()
+        if "kbytes" in toks and "files" in toks:
+            header_idx = i
+            break
+    if header_idx is None:
+        return None
     nums: list[int] = []
-    for tok in stdout.split():
-        v = _parse_int_token(tok)
-        if v is None:
-            continue
-        nums.append(v)
+    for ln in lines[header_idx + 1:]:
+        toks = ln.split()
+        if toks and toks[0] == "uid":
+            break
+        for t in toks:
+            v = _parse_int_token(t)
+            if v is not None:
+                nums.append(v)
+        if len(nums) >= 8:
+            break
     if len(nums) < 8:
         return None
-    kb_used, kb_soft, kb_hard, _kb_grace, f_used, f_soft, f_hard, _f_grace = nums[-8:]
+    kb_used, kb_soft, kb_hard, _kb_grace, f_used, f_soft, f_hard, _f_grace = nums[:8]
     kb_limit = kb_hard or kb_soft
     f_limit = f_hard or f_soft
     if not kb_limit and not f_limit:
