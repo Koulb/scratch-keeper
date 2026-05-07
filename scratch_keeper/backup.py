@@ -85,7 +85,7 @@ def _suffix_for(compressor: str) -> str:
 
 def archive_files(
     *,
-    files: list,
+    files: list[Path],
     root: Path,
     out_path: Path,
     compressor: str = "zstd",
