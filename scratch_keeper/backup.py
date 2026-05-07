@@ -2,11 +2,16 @@
 tar archive into the long-term store."""
 from __future__ import annotations
 
+import datetime as _dt
 import fnmatch
+import hashlib
 import os
+import shutil
+import subprocess
+import tarfile
 from pathlib import Path
 
-from scratch_keeper.common import Manifest
+from scratch_keeper.common import Manifest, write_json, get_logger
 
 
 DEFAULT_BACKUP_GLOBS: tuple[str, ...] = (
@@ -54,3 +59,108 @@ def build_file_list(root: str | os.PathLike, manifest: Manifest) -> list[Path]:
                 continue
             out.append(full)
     return out
+
+
+def _sha256_of(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _resolve_compressor(compressor: str) -> str:
+    """Return effective compressor: 'zstd' if requested and available,
+    else 'gzip'. Raise on completely unknown choices."""
+    if compressor not in ("zstd", "gzip"):
+        raise ValueError(f"unsupported compressor {compressor!r}")
+    if compressor == "zstd" and shutil.which("zstd") is None:
+        return "gzip"
+    return compressor
+
+
+def _suffix_for(compressor: str) -> str:
+    return ".tar.zst" if compressor == "zstd" else ".tar.gz"
+
+
+def archive_files(
+    *,
+    files: list,
+    root: Path,
+    out_path: Path,
+    compressor: str = "zstd",
+    zstd_level: int = 6,
+    zstd_threads: int = 0,
+    verify: bool = True,
+) -> dict:
+    """Create a tar archive of `files`, with paths stored relative to `root`.
+
+    Writes to `<out_path>.partial`, renames on success. Returns a dict with
+    the tar path, sidecar manifest path, file count, sha256, and bytes.
+    """
+    log = get_logger("scratch_keeper.backup")
+    eff = _resolve_compressor(compressor)
+    out_path = out_path.with_suffix("").with_suffix(_suffix_for(eff))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    partial = out_path.with_name(out_path.name + ".partial")
+
+    if eff == "gzip":
+        with tarfile.open(partial, "w:gz") as t:
+            for f in files:
+                t.add(f, arcname=str(f.relative_to(root)),
+                      recursive=False)
+    else:
+        list_file = partial.with_suffix(".files")
+        list_file.write_text(
+            "\n".join(str(f.relative_to(root)) for f in files) + "\n"
+        )
+        cmd = [
+            "tar",
+            "--use-compress-program",
+            f"zstd -T{zstd_threads} -{zstd_level}",
+            "-cf", str(partial),
+            "-C", str(root),
+            "-T", str(list_file),
+        ]
+        log.info("running %s", " ".join(cmd))
+        subprocess.run(cmd, check=True)
+        list_file.unlink(missing_ok=True)
+
+    if verify:
+        if eff == "gzip":
+            with tarfile.open(partial, "r:gz") as t:
+                count = sum(1 for m in t.getmembers() if m.isfile())
+        else:
+            res = subprocess.run(
+                ["tar", "--use-compress-program", "zstd -d", "-tf", str(partial)],
+                check=True, capture_output=True, text=True,
+            )
+            count = sum(1 for line in res.stdout.splitlines()
+                        if not line.endswith("/"))
+        if count != len(files):
+            raise RuntimeError(
+                f"verify mismatch: tar has {count} files, expected {len(files)}"
+            )
+
+    digest = _sha256_of(partial)
+    size = partial.stat().st_size
+    partial.rename(out_path)
+
+    sidecar_path = out_path.with_suffix("").with_suffix(".manifest.json")
+    if sidecar_path == out_path:
+        sidecar_path = out_path.with_name(out_path.name + ".manifest.json")
+    write_json(sidecar_path, {
+        "created_utc": _dt.datetime.utcnow().isoformat() + "Z",
+        "tar_path": str(out_path),
+        "tar_size_bytes": size,
+        "sha256": digest,
+        "n_files": len(files),
+        "compressor": eff,
+    })
+    return {
+        "tar_path": str(out_path),
+        "manifest_path": str(sidecar_path),
+        "n_files": len(files),
+        "sha256": digest,
+        "tar_size_bytes": size,
+    }
