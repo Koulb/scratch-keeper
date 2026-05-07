@@ -21,3 +21,10 @@ Categorization order:
 The store at /capstor/store/cscs/marvel/mr33/apoliukh holds tar
 backups; backup.keep_last in config caps the rotation (older archives
 are never auto-deleted; status warns).
+
+Inode quota: scratch is also capped by an inode (file count) quota.
+audit shells out to `lfs quota -u $USER <scratch_root>` and prints
+files-used / files-limit + a percentage. If usage crosses
+config.quota.warn_threshold_pct (default 80), the line is flagged
+WARNING. Set config.quota.auto_detect=false (or
+quota.max_inodes_override=<int>) to skip the lfs probe.

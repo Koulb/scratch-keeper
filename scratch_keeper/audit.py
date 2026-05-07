@@ -89,44 +89,94 @@ def scan_dir(
 from concurrent.futures import ThreadPoolExecutor
 
 from scratch_keeper.common import (
-    load_manifests, write_json, get_logger,
+    load_manifests, write_json, get_logger, lfs_quota,
     timestamp_now, human_bytes,
 )
 
 
+_CATEGORIES = ("keeper", "delete-candidate", "system", "unknown")
+_CAT_KEY = {
+    "keeper": "keepers",
+    "delete-candidate": "delete_candidates",
+    "system": "system",
+    "unknown": "unknown",
+}
+
+
 def _summarize(rows: list[dict], warn_threshold: int) -> dict:
-    n_keepers = sum(1 for r in rows if r["category"] == "keeper")
-    n_del = sum(1 for r in rows if r["category"] == "delete-candidate")
-    n_sys = sum(1 for r in rows if r["category"] == "system")
-    n_unk = sum(1 for r in rows if r["category"] == "unknown")
-    bytes_keepers = sum(r["size_bytes"] for r in rows if r["category"] == "keeper")
-    bytes_del = sum(r["size_bytes"] for r in rows if r["category"] == "delete-candidate")
-    bytes_sys = sum(r["size_bytes"] for r in rows if r["category"] == "system")
-    bytes_unk = sum(r["size_bytes"] for r in rows if r["category"] == "unknown")
-    n_at_risk = sum(1 for r in rows
-                    if r["days_until_reap"] is not None
-                    and r["days_until_reap"] <= warn_threshold)
-    return {
-        "n_keepers": n_keepers, "bytes_keepers": bytes_keepers,
-        "n_delete_candidates": n_del, "bytes_delete_candidates": bytes_del,
-        "n_system": n_sys, "bytes_system": bytes_sys,
-        "n_unknown": n_unk, "bytes_unknown": bytes_unk,
-        "n_at_risk": n_at_risk,
-        "total_bytes": sum(r["size_bytes"] for r in rows),
-        "total_dirs": len(rows),
-    }
+    out: dict = {}
+    for cat in _CATEGORIES:
+        key = _CAT_KEY[cat]
+        cat_rows = [r for r in rows if r["category"] == cat]
+        out[f"n_{key}"] = len(cat_rows)
+        out[f"bytes_{key}"] = sum(r["size_bytes"] for r in cat_rows)
+        out[f"files_{key}"] = sum(r["n_files"] for r in cat_rows)
+    out["n_at_risk"] = sum(1 for r in rows
+                          if r["days_until_reap"] is not None
+                          and r["days_until_reap"] <= warn_threshold)
+    out["total_bytes"] = sum(r["size_bytes"] for r in rows)
+    out["total_files"] = sum(r["n_files"] for r in rows)
+    out["total_subdirs"] = sum(r["n_dirs"] for r in rows)
+    out["total_dirs"] = len(rows)
+    return out
 
 
 def _print_summary(payload: dict) -> None:
     s = payload["summary"]
     print(f"=== Scratch audit {payload['created_at']} ===")
-    print(f"Total: {s['total_dirs']} dirs, {human_bytes(s['total_bytes'])}")
-    print(f"Keepers          ({s['n_keepers']:>2}): {human_bytes(s['bytes_keepers'])}")
-    print(f"Delete cand      ({s['n_delete_candidates']:>2}): {human_bytes(s['bytes_delete_candidates'])}")
-    print(f"System           ({s['n_system']:>2}): {human_bytes(s['bytes_system'])}")
-    print(f"Unknown          ({s['n_unknown']:>2}): {human_bytes(s['bytes_unknown'])}")
+    print(f"Total: {s['total_dirs']} dirs, {human_bytes(s['total_bytes'])}, "
+          f"{s['total_files']} files")
+    print(f"Keepers          ({s['n_keepers']:>2}): "
+          f"{human_bytes(s['bytes_keepers'])}, {s['files_keepers']} files")
+    print(f"Delete cand      ({s['n_delete_candidates']:>2}): "
+          f"{human_bytes(s['bytes_delete_candidates'])}, "
+          f"{s['files_delete_candidates']} files")
+    print(f"System           ({s['n_system']:>2}): "
+          f"{human_bytes(s['bytes_system'])}, {s['files_system']} files")
+    print(f"Unknown          ({s['n_unknown']:>2}): "
+          f"{human_bytes(s['bytes_unknown'])}, {s['files_unknown']} files")
     if s["n_at_risk"]:
         print(f"At-risk dirs (mtime within warn window): {s['n_at_risk']}")
+    q = payload.get("quota")
+    if q and q.get("files_limit"):
+        warn = ""
+        if q.get("files_pct") is not None and q["files_pct"] >= q.get(
+            "warn_threshold_pct", 80
+        ):
+            warn = "  WARNING"
+        print(f"Inode quota: {q['files_used']:,} / {q['files_limit']:,} "
+              f"({q['files_pct']:.1f}%){warn}")
+
+
+def _detect_quota(config: dict, scratch: Path) -> dict | None:
+    qcfg = config.get("quota") or {}
+    if not qcfg.get("auto_detect", True):
+        return None
+    override = qcfg.get("max_inodes_override")
+    warn_pct = float(qcfg.get("warn_threshold_pct", 80))
+    if override:
+        return {
+            "files_used": None,
+            "files_limit": int(override),
+            "files_pct": None,
+            "warn_threshold_pct": warn_pct,
+            "source": "override",
+        }
+    raw = lfs_quota(scratch)
+    if not raw:
+        return None
+    files_used = raw["files_used"]
+    files_limit = raw["files_limit"]
+    pct = (files_used / files_limit * 100.0) if files_limit else None
+    return {
+        "files_used": files_used,
+        "files_limit": files_limit,
+        "files_pct": round(pct, 2) if pct is not None else None,
+        "kbytes_used": raw["kbytes_used"],
+        "kbytes_limit": raw["kbytes_limit"],
+        "warn_threshold_pct": warn_pct,
+        "source": "lfs",
+    }
 
 
 def run(config: dict, *, quick: bool = False) -> dict:
@@ -167,12 +217,14 @@ def run(config: dict, *, quick: bool = False) -> dict:
 
     rows.sort(key=lambda r: -r["size_bytes"])
     summary = _summarize(rows, warn_thr)
+    quota = _detect_quota(config, scratch)
     ts = timestamp_now()
     payload = {
         "created_at": ts,
         "scratch_root": str(scratch),
         "rows": rows,
         "summary": summary,
+        "quota": quota,
     }
     log_dir.mkdir(parents=True, exist_ok=True)
     out_path = log_dir / f"audit_{ts}.json"

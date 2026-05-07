@@ -40,5 +40,10 @@
   "touch": {
     "max_age_days": 20,
     "workers": 4
+  },
+  "quota": {
+    "auto_detect": true,
+    "max_inodes_override": null,
+    "warn_threshold_pct": 80
   }
 }

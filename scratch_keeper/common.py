@@ -187,6 +187,77 @@ def timestamp_now() -> str:
     return _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+_UNIT_MULT = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4, "P": 1024**5}
+
+
+def _parse_int_token(tok: str) -> int | None:
+    """Parse an `lfs quota` numeric token. Strips trailing `*` (over-quota
+    marker). Accepts `-` (returns 0) and unit suffixes (K/M/G/T/P)."""
+    s = tok.strip().rstrip("*")
+    if not s or s == "-":
+        return 0 if s == "-" else None
+    mult = 1
+    if s[-1].upper() in _UNIT_MULT:
+        mult = _UNIT_MULT[s[-1].upper()]
+        s = s[:-1]
+    try:
+        return int(float(s) * mult)
+    except ValueError:
+        return None
+
+
+def _parse_lfs_quota(stdout: str) -> dict | None:
+    """Parse stdout of `lfs quota -u USER PATH`.
+
+    Returns `{kbytes_used, kbytes_limit, files_used, files_limit}` or None
+    when output is unparseable, or when both file and kbyte limits are 0
+    (Lustre's "unlimited" sentinel — no quota to report).
+    """
+    nums: list[int] = []
+    for tok in stdout.split():
+        v = _parse_int_token(tok)
+        if v is None:
+            continue
+        nums.append(v)
+    if len(nums) < 8:
+        return None
+    kb_used, kb_soft, kb_hard, _kb_grace, f_used, f_soft, f_hard, _f_grace = nums[-8:]
+    kb_limit = kb_hard or kb_soft
+    f_limit = f_hard or f_soft
+    if not kb_limit and not f_limit:
+        return None
+    return {
+        "kbytes_used": kb_used,
+        "kbytes_limit": kb_limit,
+        "files_used": f_used,
+        "files_limit": f_limit,
+    }
+
+
+import shutil
+
+
+def lfs_quota(path: str | os.PathLike, *, user: str | None = None,
+              timeout: float = 10.0) -> dict | None:
+    """Run `lfs quota -u USER PATH` and parse the result. Returns None if
+    `lfs` is not installed, the call fails, or the output is unparseable."""
+    if shutil.which("lfs") is None:
+        return None
+    user = user or os.environ.get("USER") or ""
+    if not user:
+        return None
+    try:
+        res = subprocess.run(
+            ["lfs", "quota", "-u", user, str(path)],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if res.returncode != 0:
+        return None
+    return _parse_lfs_quota(res.stdout)
+
+
 _LOGGERS: dict[str, logging.Logger] = {}
 
 

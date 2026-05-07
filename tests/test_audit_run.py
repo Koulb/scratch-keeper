@@ -56,3 +56,75 @@ def test_audit_run_summary_counts_at_risk(tmp_path):
     out = audit_run(_fake_config(tmp_path))
     payload = json.loads(Path(out["audit_path"]).read_text())
     assert payload["summary"]["n_at_risk"] >= 1
+
+
+def test_audit_run_summary_aggregates_inode_counts(tmp_path):
+    scratch = tmp_path / "scratch"
+    _make(scratch / "raman", n=3)
+    _make(scratch / "qe-agent", n=5)
+    pdir = tmp_path / "projects"
+    pdir.mkdir()
+    (pdir / "raman.json").write_text(json.dumps({
+        "name": "raman", "path": "raman", "category": "keeper",
+    }))
+    out = audit_run(_fake_config(tmp_path))
+    payload = json.loads(Path(out["audit_path"]).read_text())
+    s = payload["summary"]
+    assert s["total_files"] == 8
+    assert s["files_keepers"] == 3
+    assert s["files_delete_candidates"] == 5
+    assert s["files_system"] == 0
+    assert s["files_unknown"] == 0
+
+
+def test_audit_run_attaches_quota_when_detect_succeeds(tmp_path, monkeypatch):
+    from scratch_keeper import audit as audit_mod
+    monkeypatch.setattr(
+        audit_mod, "lfs_quota",
+        lambda path, **_: {
+            "files_used": 50_000, "files_limit": 1_000_000,
+            "kbytes_used": 1024, "kbytes_limit": 4096,
+        },
+    )
+    scratch = tmp_path / "scratch"
+    _make(scratch / "raman", n=1)
+    cfg = _fake_config(tmp_path)
+    cfg["quota"] = {"auto_detect": True, "warn_threshold_pct": 80}
+    out = audit_run(cfg)
+    payload = json.loads(Path(out["audit_path"]).read_text())
+    assert payload["quota"]["files_used"] == 50_000
+    assert payload["quota"]["files_limit"] == 1_000_000
+    assert payload["quota"]["files_pct"] == 5.0
+
+
+def test_audit_run_skips_quota_when_detect_returns_none(tmp_path, monkeypatch):
+    from scratch_keeper import audit as audit_mod
+    monkeypatch.setattr(audit_mod, "lfs_quota", lambda path, **_: None)
+    scratch = tmp_path / "scratch"
+    _make(scratch / "raman", n=1)
+    cfg = _fake_config(tmp_path)
+    cfg["quota"] = {"auto_detect": True}
+    out = audit_run(cfg)
+    payload = json.loads(Path(out["audit_path"]).read_text())
+    assert payload["quota"] is None
+
+
+def test_audit_run_print_includes_inode_line(tmp_path, monkeypatch, capsys):
+    from scratch_keeper import audit as audit_mod
+    monkeypatch.setattr(
+        audit_mod, "lfs_quota",
+        lambda path, **_: {
+            "files_used": 900_000, "files_limit": 1_000_000,
+            "kbytes_used": 1, "kbytes_limit": 2,
+        },
+    )
+    scratch = tmp_path / "scratch"
+    _make(scratch / "raman", n=2)
+    cfg = _fake_config(tmp_path)
+    cfg["quota"] = {"auto_detect": True, "warn_threshold_pct": 80}
+    audit_run(cfg)
+    captured = capsys.readouterr().out
+    assert "files" in captured
+    assert "Inode quota" in captured
+    assert "90.0%" in captured
+    assert "WARNING" in captured
