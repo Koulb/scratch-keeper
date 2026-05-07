@@ -1,0 +1,19 @@
+{
+  "name": "raman",
+  "path": "raman",
+  "category": "keeper",
+  "backup_globs": [
+    "**/*.in", "**/*.cif", "**/*.UPF", "**/*.upf",
+    "**/*.xml", "**/*.out",
+    "**/summary.json", "**/parsed/**", "**/plots/**",
+    "**/*.png", "**/*.pdf", "**/*.ipynb",
+    "**/run.sh", "**/*.slurm"
+  ],
+  "exclude_globs": [
+    "**/out/**", "**/*.wfc*", "**/*.save/**",
+    "**/tmp/**", "**/__pycache__/**", "**/.git/**"
+  ],
+  "touch_globs": ["**/*"],
+  "touch_exclude_globs": ["**/*.wfc*", "**/out/**"],
+  "notes": "Raman tensor + EPC project. Active through 2026-Q3."
+}

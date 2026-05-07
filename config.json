@@ -1,0 +1,44 @@
+{
+  "scratch_root": "/capstor/scratch/cscs/apoliukh",
+  "store_root": "/capstor/store/cscs/marvel/mr33/apoliukh",
+  "backup_dir": "/capstor/store/cscs/marvel/mr33/apoliukh/scratch_backup",
+  "log_dir": "~/scratch-keeper/logs",
+  "projects_dir": "~/scratch-keeper/projects",
+  "reaper": {
+    "max_days_idle": 30,
+    "warn_threshold_days": 7
+  },
+  "audit": {
+    "parallel_workers": 4,
+    "cache_ttl_minutes": 60
+  },
+  "backup": {
+    "compressor": "zstd",
+    "zstd_level": 6,
+    "zstd_threads": 0,
+    "keep_last": 3,
+    "verify": true
+  },
+  "delete": {
+    "default_max_rows": 50,
+    "default_max_bytes_gb": 5000,
+    "protected_dotfiles": [
+      ".julia",
+      ".enroot",
+      ".uenv-images",
+      ".ipynb_checkpoints",
+      ".edf_imagestore",
+      ".parallax_imagestore"
+    ],
+    "score_weights": {
+      "age_days": 0.4,
+      "reproducible": 0.3,
+      "size_gb": 0.2,
+      "name_match": 0.1
+    }
+  },
+  "touch": {
+    "max_age_days": 20,
+    "workers": 4
+  }
+}
