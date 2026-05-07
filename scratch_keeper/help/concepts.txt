@@ -1,0 +1,23 @@
+scratch-keeper — concepts
+
+CSCS scratch (/capstor/scratch/cscs/apoliukh) auto-deletes files whose
+mtime is older than 30 days (the "reaper"). scratch-keeper classifies
+each top-level directory under scratch:
+
+  keeper            Active project. Backed up; touch_globs refresh mtime.
+  delete-candidate  Reproducible bulk (benchmark output, caches, venvs).
+                    Surfaces in delete proposals.
+  system            Protected dotfile cache (.julia, .enroot, ...). Never
+                    proposed for delete.
+  unknown           No manifest, no heuristic match. Surfaces only when
+                    --include-unknown is passed; default action keep.
+
+Categorization order:
+  1. projects/<name>.json (if present, wins)
+  2. config.delete.protected_dotfiles → system
+  3. built-in default delete-candidate set → delete-candidate
+  4. else → unknown
+
+The store at /capstor/store/cscs/marvel/mr33/apoliukh holds tar
+backups; backup.keep_last in config caps the rotation (older archives
+are never auto-deleted; status warns).

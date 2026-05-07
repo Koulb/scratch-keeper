@@ -1,0 +1,25 @@
+scratch-keeper — typical workflow
+
+  cluster-manage audit
+      writes logs/audit_<ts>.json + prints summary
+
+  cluster-manage backup --audit logs/audit_<ts>.json
+      streams a tar of all keeper projects into backup_dir
+
+  cluster-manage propose-delete --audit logs/audit_<ts>.json
+      writes logs/delete_proposal_<ts>.json (no rm)
+
+  $EDITOR logs/delete_proposal_<ts>.json
+      flip 'action: delete|keep' per row, save
+
+  cluster-manage execute-delete logs/delete_proposal_<ts>.json --confirm
+      rm -rf only the rows still set to action: delete; safety guards always on
+
+  cluster-manage touch
+      refresh mtime on every project that declares touch_globs in its manifest
+
+  cluster-manage status
+      one-screen recap of audit, archives, last delete
+
+  cluster-manage run-all
+      audit → backup → propose → touch  (NEVER deletes)
