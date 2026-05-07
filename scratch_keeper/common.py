@@ -98,3 +98,110 @@ def load_manifests(projects_dir: "str | os.PathLike") -> "dict[str, Manifest]":
         )
         out[m.path] = m
     return out
+
+
+import datetime as _dt
+from typing import Iterator
+
+
+def du_bytes(path: str | os.PathLike) -> int:
+    """Sum apparent size of all regular files under `path` (recursive)."""
+    total = 0
+    for root, _dirs, files in os.walk(path, followlinks=False):
+        for name in files:
+            fp = os.path.join(root, name)
+            try:
+                total += os.lstat(fp).st_size
+            except (FileNotFoundError, PermissionError):
+                continue
+    return total
+
+
+def count_files_dirs(path: str | os.PathLike) -> tuple[int, int]:
+    """Return (n_regular_files, n_subdirs) recursively under `path`."""
+    n_files = 0
+    n_dirs = 0
+    for _root, dirs, files in os.walk(path, followlinks=False):
+        n_dirs += len(dirs)
+        n_files += len(files)
+    return n_files, n_dirs
+
+
+def _iter_mtimes(path: str | os.PathLike) -> Iterator[float]:
+    p = Path(path)
+    yielded = False
+    for root, _dirs, files in os.walk(p, followlinks=False):
+        for name in files:
+            fp = os.path.join(root, name)
+            try:
+                yield os.lstat(fp).st_mtime
+                yielded = True
+            except (FileNotFoundError, PermissionError):
+                continue
+    if not yielded:
+        try:
+            yield p.stat().st_mtime
+        except FileNotFoundError:
+            yield 0.0
+
+
+def mtime_extremes(path: str | os.PathLike) -> tuple[float, float]:
+    """Return (oldest_mtime, newest_mtime) over all files under `path`.
+    For an empty dir, returns (dir_mtime, dir_mtime)."""
+    oldest = float("inf")
+    newest = float("-inf")
+    for m in _iter_mtimes(path):
+        if m < oldest:
+            oldest = m
+        if m > newest:
+            newest = m
+    if oldest == float("inf"):
+        return 0.0, 0.0
+    return oldest, newest
+
+
+def write_json(path: str | os.PathLike, payload: object) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(payload, indent=2, default=str))
+
+
+def read_json(path: str | os.PathLike) -> object:
+    return json.loads(Path(path).read_text())
+
+
+def human_bytes(n: int) -> str:
+    if n < 1024:
+        return f"{int(n)} B"
+    units = ["KB", "MB", "GB", "TB", "PB"]
+    f = float(n) / 1024.0
+    for u in units:
+        if f < 1024.0 or u == units[-1]:
+            return f"{f:.1f} {u}"
+        f /= 1024.0
+    return f"{f:.1f} PB"
+
+
+def timestamp_now() -> str:
+    """Local time in YYYYMMDD_HHMMSS form (mirrors QEClaw convention)."""
+    return _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+_LOGGERS: dict[str, logging.Logger] = {}
+
+
+def get_logger(name: str = "scratch_keeper") -> logging.Logger:
+    if name in _LOGGERS:
+        return _LOGGERS[name]
+    lg = logging.getLogger(name)
+    if not lg.handlers:
+        h = logging.StreamHandler()
+        h.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+        lg.addHandler(h)
+        lg.setLevel(logging.INFO)
+        lg.propagate = False
+    _LOGGERS[name] = lg
+    return lg
